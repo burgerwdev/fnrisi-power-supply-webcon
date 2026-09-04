@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="zh" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DPS-150 Web Console</title>
+    <link rel="icon" href="data:," />
+  </head>
+  <body>
+    <div id="app">
+      <div class="topbar">
+        <div class="brand">FNIRSI <span id="brand-model" data-i18n="brand.model">Power Supply</span> Web Console</div>
+        <div class="spacer"></div>
+        <select id="sel-transport" title="连接方式">
+          <option value="usb" data-i18n="conn.usb">USB(WebSerial)</option>
+          <option value="ws" data-i18n="conn.ws">代理(ws 桥)</option>
+        </select>
+        <input type="text" id="in-proxy" value="ws://127.0.0.1:8787" style="width:210px;font-family:ui-monospace,monospace" title="本地串口桥地址" hidden />
+        <select id="sel-baud" title="通讯速率 (USB CDC 上主要用于告知设备)">
+          <option value="9600">9600</option>
+          <option value="19200">19200</option>
+          <option value="38400">38400</option>
+          <option value="57600">57600</option>
+          <option value="115200" selected>115200</option>
+        </select>
+        <button id="btn-connect" class="primary" data-i18n="conn.connect">连接设备</button>
+        <button id="btn-disconnect" disabled data-i18n="conn.disconnect">断开</button>
+        <button id="btn-lock" disabled data-i18n-title="conn.lock.title">🔒</button>
+      </div>
+
+
+      <nav class="tabs" id="tabs">
+        <button data-tab="meter" class="active" data-i18n="tab.meter">仪表</button>
+        <button data-tab="preset" data-i18n="tab.preset">预设</button>
+        <button data-tab="sequence" data-i18n="tab.sequence">序列</button>
+        <button data-tab="scan" data-i18n="tab.scan">扫描</button>
+        <button data-tab="protect" data-i18n="tab.protect">保护</button>
+        <button data-tab="script" data-i18n="tab.script">脚本</button>
+        <button data-tab="settings" data-i18n="tab.settings">设置</button>
+      </nav>
+
+      <section class="panel tabpage" id="tab-meter">
+        <div class="dash-cols">
+          <div class="dash-left">
+            <div class="dash-status" id="dash-status"></div>
+            <div id="meters"></div>
+          </div>
+          <div class="dash-right">
+            <div class="panel set-panel">
+              <div class="out-head">
+                <h2 data-i18n="set.title">设定 <span class="og-sub">SET</span></h2>
+                <button type="button" id="kbd-toggle" data-i18n-title="kbd.toggle" title="⌨ 数字键盘">⌨</button>
+              </div>
+              <div class="ogs-line" id="out-setline">
+                <div class="ogs-cell">
+                  <span class="ogs-label" data-i18n="set.applied">已应用设定</span>
+                  <span class="ogs-value" id="out-setline-val"><span class="ogv v" id="set-v">--</span><span class="ogv sep">/</span><span class="ogv a" id="set-a">--</span></span>
+                </div>
+                <button id="btn-out" class="big outblue" data-i18n="out.on">开启输出</button>
+              </div>
+              <div class="out-grid">
+                <div class="out-group" id="grp-v">
+                  <div class="og-title" data-i18n="set.voltage">电压 <span class="og-unit">V</span></div>
+                  <div class="og-edit">
+                    <button type="button" class="stepper" id="dec-v" title="按步进减小">−</button>
+                    <input type="text" id="in-v" inputmode="decimal" autocomplete="off" spellcheck="false" value="0.5" />
+                    <button type="button" class="stepper" id="inc-v" title="按步进增大">+</button>
+                  </div>
+                  <div class="og-steps">
+                    <span class="os-lbl" data-i18n="set.step">步进</span>
+                    <input type="number" id="step-v" step="any" min="0" value="0.1" title="自定义步进" />
+                    <span class="os-chips" id="chips-v"></span>
+                  </div>
+                  <div class="og-hint" id="hint-v"></div>
+                </div>
+                <div class="out-group" id="grp-a">
+                  <div class="og-title" data-i18n="set.current">电流 <span class="og-unit">A</span></div>
+                  <div class="og-edit">
+                    <button type="button" class="stepper" id="dec-a" title="按步进减小">−</button>
+                    <input type="text" id="in-a" inputmode="decimal" autocomplete="off" spellcheck="false" value="0.05" />
+                    <button type="button" class="stepper" id="inc-a" title="按步进增大">+</button>
+                  </div>
+                  <div class="og-steps">
+                    <span class="os-lbl" data-i18n="set.step">步进</span>
+                    <input type="number" id="step-a" step="any" min="0" value="0.01" title="自定义步进" />
+                    <span class="os-chips" id="chips-a"></span>
+                  </div>
+                  <div class="og-hint" id="hint-a"></div>
+                </div>
+              </div>
+              <div class="out-actions">
+                <button id="btn-set" class="primary big" data-i18n="set.apply">应用设定</button>
+              </div>
+              <div class="out-run-info"><span id="out-note">输出 --</span></div>
+            </div>
+            <div class="panel preset-quick-panel">
+              <h2 data-i18n="preset.quick">预设快速选择</h2>
+              <div id="preset-quick" class="preset-quick"></div>
+            </div>
+          </div>
+        </div>
+        <div id="curve-area"></div>
+      </section>
+      <section class="panel tabpage" id="tab-preset" hidden>
+        <h2>预设 M1–M6</h2>
+      </section>
+      <section class="panel tabpage" id="tab-scan" hidden>
+        <h2>扫描向导</h2>
+      </section>
+      <section class="panel tabpage" id="tab-sequence" hidden>
+        <h2>序列 / 自动模式</h2>
+      </section>
+      <section class="panel tabpage" id="tab-protect" hidden>
+        <h2>保护阈值</h2>
+      </section>
+      <section class="panel tabpage" id="tab-script" hidden>
+        <h2>高级模式·脚本区</h2>
+      </section>
+      <section class="panel tabpage" id="tab-settings" hidden>
+        <h2>设置</h2>
+      </section>
+      <footer class="app-footer">
+        <span class="ft-tag" id="ft-model">--</span>
+        <span class="ft-sep">·</span><span id="ft-hw">HW --</span>
+        <span class="ft-sep">·</span><span id="ft-fw">FW --</span>
+        <span class="ft-sep">·</span><span id="ft-ver"></span>
+        <span class="spacer"></span>
+        <button id="btn-theme" data-i18n="foot.theme">◐ 主题</button>
+        <button id="btn-lang" data-i18n="foot.lang">语言:中文</button>
+        <button id="btn-debug" title="协议日志浮动层">Debug</button>
+      </footer>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

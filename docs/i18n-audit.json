@@ -1,0 +1,11 @@
+{
+  "generatedAt": "2026-09-04T08:47:11.143Z",
+  "hardcodedCjk": {
+    "count": 4,
+    "byFile": {
+      "rc/main.ts": 3,
+      "rc/ui/tabs/settings.ts": 1
+    }
+  },
+  "missingTKeys": []
+}

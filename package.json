@@ -1,0 +1,27 @@
+{
+  "name": "dps150-webconsole",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "license": "MIT",
+  "description": "FNIRSI DPS-150 WebSerial web console (non-official, open source)",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "e2e": "vite build && npx vite preview --port 4173 --strictPort & sleep 3 && node e2e/smoke.cjs"
+  },
+  "devDependencies": {
+    "@types/w3c-web-serial": "^1.0.8",
+    "playwright": "^1.62.1",
+    "typescript": "^5.5.4",
+    "vite": "^6.0.7",
+    "vitest": "^2.1.8",
+    "ws": "^8.21.3"
+  },
+  "dependencies": {
+    "uplot": "^1.6.32"
+  }
+}

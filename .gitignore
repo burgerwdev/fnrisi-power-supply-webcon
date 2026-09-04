@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+.vite/
+*.tsbuildinfo
+
+# Runtime / logs
+.run/
+logs/
+*.log
+*.pid
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Test coverage
+coverage/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
