@@ -57,7 +57,7 @@ npm run build      # 产物在 dist/
 
 ## 一键管理(Makefile)
 
-依赖:node/npm、python3(+pyserial)、自动化测试另需 playwright chromium。`make doctor` 体检并提示缺什么。
+依赖:node/npm、python3(+pyserial)、自动化测试另需 playwright chromium。`make doctor` 体检并提示缺什么——包括 Linux 的 **cdc_acm** 内核驱动与 `/dev/ttyACM0` 权限。需要 node 依赖的目标会在首次使用(或 `package.json`/`package-lock.json` 变更)时**自动执行 `npm install`**,因此 `make build/dev/up/…` 之前的手动 `npm install` 是可选的。
 
 | 命令 | 作用 |
 |---|---|
@@ -66,11 +66,12 @@ npm run build      # 产物在 dist/
 | `make status` / `make logs` | 服务状态 / 查看日志 |
 | `make dev` | 前端开发服务器(vite dev,前台) |
 | `make build` / `make typecheck` / `make test` | 构建 / 类型检查 / 单测 |
-| `make smoke` | 无头冒烟(需 `make up`) |
+| `make smoke` | 无头冒烟(自动启动网页服务) |
 | `make ui-full-proxy` | 真机全 UI 自动化(经代理,headless) |
 | `node e2e/edge.cjs`(需代理) | 边界套件:非法输入不写/自动任务互斥/忙时禁手控/tooltip/语言切换 |
 | `make device-full` | 设备层全功能验证(含 1V/50mA 空载 RUN) |
-| `make perm` | 放开 /dev/ttyACM0 权限(可能需要 sudo) |
+| `make perm` | 立即放开设备节点权限给当前用户(仅本次插拔,自动 sudo) |
+| `make udev` | 安装 udev 规则实现永久设备访问(sudo;非 udev 系统见下文) |
 | `make clean` / `make distclean` | 清理构建产物 / 连 node_modules 一起清理 |
 
 可用 `make up PORT=8080 BAUD=9600` 覆盖;桥端口用 `WSPORT=…`。
@@ -99,10 +100,35 @@ npm run build      # 产物在 dist/
 
 ## 设备连接与环境要求
 
-WebSerial 只能访问**浏览器所在操作系统**枚举到的 USB 串口:
+WebSerial 只能访问**浏览器所在操作系统**枚举到的 USB 串口。在 Linux 上,DPS-150 以 USB **CDC-ACM** 设备枚举,由 **`cdc_acm`** 内核驱动接管,呈现为 `/dev/ttyACM0`。需要满足以下三点:
+
+**1. 内核驱动(cdc_acm)**
+
+- 主流桌面发行版(systemd + udev)在插入设备时会自动加载该模块——通常无需操作。
+- 如果设备已插入(`lsusb` 可见)却始终不出现 `/dev/ttyACM*`,说明模块可能缺失或**未被加载**:
+  - 立即加载:`sudo modprobe cdc_acm`
+  - 开机自动加载:`echo cdc_acm | sudo tee /etc/modules-load.d/cdc_acm.conf`(systemd 系);或在你的 init 系统模块列表里加入 `cdc_acm`(如 OpenRC:`/etc/conf.d/modules` 中 `modules="cdc_acm"`)。
+- `make doctor` 会报告驱动状态。若 `modprobe cdc_acm` 失败**且** `/sys/bus/usb/drivers/cdc_acm` 不存在,说明当前内核编译时未启用 `CONFIG_USB_ACM`,需更换内核才能使用本设备。*(FTDI/CH340 等 USB 串口适配器走其它驱动、显示为 `ttyUSB0`,与本设备无关。)*
+
+**2. 设备节点权限**
+
+驱动注册端口后创建的 `/dev/ttyACM0` 通常属主为 `root`,属组为 `dialout`(Debian/Ubuntu)或 `uucp`(Arch),权限 660。当前用户必须能打开它:
+
+- **udev 规则(推荐)**——执行 `make udev` 安装 `/etc/udev/rules.d/99-fnirsi-dps.rules`(将 FNIRSI 设备 `2e3c:5740` 设为 0666;若 `lsusb` 显示其它 ID 请自行调整),并自动重载规则;之后**重新拔插**设备生效。若系统**根本没有 udev**(busybox **mdev**,如不带 eudev 的 Alpine;或静态 `/dev`),`make udev` 会给出提示——请改用你的设备管理器配置,例如 `/etc/mdev.conf`:
+  ```
+  ttyACM[0-9]* root:root 0666
+  ```
+- **加入串口用户组**——`sudo usermod -aG dialout $USER`(Arch 用 `uucp`),然后重新登录。默认规则把 ttyACM 归入该组时此方案即可。
+- **一次性(直到重新拔插)**——`sudo chmod 666 /dev/ttyACM0`;也可执行 `make perm`(自动 sudo)。
+
+**3. 浏览器访问**
+
+Chromium 的 Web Serial 选择器只会列出**运行浏览器的那个用户**能打开的端口,因此第 2 步必须对该用户成立。沙箱化浏览器(Flatpak/Snap 版 Chromium)还需在沙箱里授予设备访问权限。
+
+平台说明:
 
 - **Windows Chrome/Edge**——若设备被 usbipd 绑定到 WSL,先 `usbipd list` 找到,再 `usbipd attach --wsl --busid <BUSID>`(在 WSL 侧时省略 `--wsl`),然后打开页面→连接→选设备。
-- **WSLg 内 Linux Chrome**——设备以 `/dev/ttyACM0` 出现,可先直接连;若 Chrome 枚举不到,用 Windows 侧方案。
+- **WSLg 内 Linux Chrome**——设备以 `/dev/ttyACM0` 出现在 **WSL 虚拟机内部**;请在上述 WSL 环境内完成第 1–2 步(推荐走下文串口桥方案)。若 Chrome 枚举不到,用 Windows 侧方案。
 - 连接后请先在**低电压/小电流/空载**下验证「仪表→设定→输出」闭环(带确认)。
 
 ## 本地串口桥与 WSL 备注
@@ -115,7 +141,7 @@ PROXY=1 node e2e/ui-full.cjs                  # 全 UI 功能验证(真机,headl
 python3 tools/selftest_full.py --run-test     # 设备层全功能验证
 ```
 
-浏览器手动使用:顶部「连接方式」选 **代理(ws 桥)** 并填 `ws://127.0.0.1:8787`(会记住);USB 直连选 **USB(WebSerial)**。设备权限:拔插后节点常回 root:600,先 `sudo chmod 666 /dev/ttyACM0`。
+浏览器手动使用:顶部「连接方式」选 **代理(ws 桥)** 并填 `ws://127.0.0.1:8787`(会记住);USB 直连选 **USB(WebSerial)**。桥接器与 make 目标打开同一个 `DEV` 节点(节点不同时用 `make DEV=/dev/ttyACM1 bridge-start`)。设备权限:重新拔插后节点通常回到 root 属主——推荐执行一次 `make udev` 安装永久规则,或 `make perm` / `sudo chmod 666 /dev/ttyACM0` 仅本次生效(见上文「设备连接与环境要求」)。
 
 ## 自动化 API
 
