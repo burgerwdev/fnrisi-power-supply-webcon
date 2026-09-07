@@ -6,14 +6,22 @@ import { h, on, q } from '../../ui/dom';
 import { confirmDialog } from '../../ui/confirm';
 import { download } from '../../storage/export';
 import { TelemetryChart } from '../../ui/chart';
+import { ViChart } from '../../ui/vichart';
+import { deleteScanRecord, listScanRecords, saveScanRecord, type ScanRecord } from '../../storage/scanrecords';
 import { uiGate } from '../../app/activity';
 
 export function initScanTab(root: HTMLElement, device: DeviceController): void {
   root.textContent = '';
+  let viLinTitle: HTMLElement | null = null;
+  let viLogTitle: HTMLElement | null = null;
+  let viLin: ViChart | null = null;
+  let viLog: ViChart | null = null;
   root.append(h('h2', {}, t('page.scan')));
   let runner: ScanRunner | null = null;
   let activeTok: number | null = null;
   let lastPoints: ScanPoint[] = [];
+  let records: ScanRecord[] = [];
+  let selectedRecordId: string | null = null;
 
   const kindSel = h('select', { id: 'sc-kind', title: t('scan.tip.kind') },
     h('option', { value: 'voltage' }, t('scan.kindV')),
@@ -38,13 +46,40 @@ export function initScanTab(root: HTMLElement, device: DeviceController): void {
   const chartWrap = h('div', { id: 'sc-chart', class: 'chart-wrap scan', style: 'height:280px;border:1px solid var(--border);border-radius:4px' },
     h('canvas', { id: 'sc-canvas', class: 'cc-canvas', style: 'width:100%;height:100%;display:block' }));
   const tableWrap = h('div', { class: 'table-scroll' });
+  // V-I 分析双图(线性 + 半对数,可叠加功率)
+  const powerChk = h('label', { class: 'vi-toggle', title: t('scan.overlayPowerTip') },
+    h('input', { type: 'checkbox' }), ' ', t('scan.overlayPower'));
+  viLinTitle = h('div', { class: 'vi-title' }, `${t('scan.linearVI')} · ${t('scan.viTip')}`);
+  viLogTitle = h('div', { class: 'vi-title' }, `${t('scan.semilogVI')} · ${t('scan.viTip')}`);
+  const viLinWrap = h('div', { class: 'vi-box', title: t('scan.viTip') }, viLinTitle,
+    h('canvas', { id: 'vi-lin', class: 'cc-canvas', style: 'width:100%;display:block' }));
+  const viLogWrap = h('div', { class: 'vi-box', title: t('scan.viTip') }, viLogTitle,
+    h('canvas', { id: 'vi-log', class: 'cc-canvas', style: 'width:100%;display:block' }));
+  const viRow = h('div', { class: 'vi-row' }, viLinWrap, viLogWrap);
+  // 记录工具栏
+  const recSel = h('select', { id: 'sc-rec', title: t('scan.recordsTip') });
+  const recLoad = h('button', { disabled: true }, t('scan.loadRec'));
+  const recDel = h('button', { disabled: true }, t('scan.deleteRec'));
+  const clear = h('button', { id: 'sc-clear' }, t('scan.clear'));
+  const recBar = h('div', { class: 'row sc-recbar' },
+    h('span', { class: 'sc-rec-label' }, t('scan.records')),
+    recSel, recLoad, recDel, exportCsv, h('span', { class: 'spacer' }), clear, powerChk);
 
   function sweepUnit(): 'V' | 'A' {
     return kindSel.value === 'voltage' ? 'V' : 'A';
   }
   function relabel(): void {
     const isV = kindSel.value === 'voltage';
+    const unit = isV ? 'V' : 'A';
     fixedLbl.textContent = isV ? t('scan.fixedCurr') : t('scan.fixedVolt');
+    startLbl.textContent = `${t('scan.sweepStart')} (${unit})`;
+    stopLbl.textContent = `${t('scan.sweepStop')} (${unit})`;
+    stepLbl.textContent = `${t('scan.step')} (${unit})`;
+    const kind = kindSel.value as 'voltage' | 'current';
+    if (viLinTitle) viLinTitle.textContent = `${kind === 'voltage' ? t('scan.linearVI') : t('scan.linearIV')} · ${t('scan.viTip')}`;
+    if (viLogTitle) viLogTitle.textContent = `${kind === 'voltage' ? t('scan.semilogVI') : t('scan.semilogIV')} · ${t('scan.viTip')}`;
+    viLin?.setKind(kind);
+    viLog?.setKind(kind);
   }
   kindSel.addEventListener('change', relabel);
   relabel();
@@ -88,7 +123,11 @@ export function initScanTab(root: HTMLElement, device: DeviceController): void {
     const stopVal = Number(stopIn.value);
     const step = Number(stepIn.value);
     const fixed = Number(fixedIn.value);
-    if (![start, stopVal, step, fixed].every(Number.isFinite)) return;
+    if (![start, stopVal, step, fixed].every(Number.isFinite)) {
+      uiGate.endAuto(activeTok);
+      activeTok = null;
+      return;
+    }
     const ok = await confirmDialog({
       title: kind === 'voltage' ? t('scan.confirmVstart') : t('scan.confirmAstart'),
       body: t('scan.confirmBody'),
@@ -99,7 +138,11 @@ export function initScanTab(root: HTMLElement, device: DeviceController): void {
       okText: t('scan.confirmOk'),
       danger: true,
     });
-    if (!ok || !device.isOpen()) return;
+    if (!ok || !device.isOpen()) {
+      uiGate.endAuto(activeTok);
+      activeTok = null;
+      return;
+    }
     await device.setOutput(true).catch(() => undefined);
     lastPoints = [];
     setRunning(true);
@@ -118,28 +161,47 @@ export function initScanTab(root: HTMLElement, device: DeviceController): void {
           status.textContent = `${t('scan.running')} ${d}/${total} · ${label}`;
         },
         onPoint: (pt, d, total) => {
-          // live preview without mutating the final list (final list assembled in onFinished)
-          const live = [...points, pt];
-          renderTable(live);
+          // accumulate live so the VI charts draw during the sweep
+          points.push(pt);
+          renderTable(points);
+          viLin!.setData(points);
+          viLog!.setData(points);
           exportCsv.disabled = false;
-          status.textContent = `${t('scan.running')} ${d}/${total} · ${live.length}${t('scan.pointsSuffix')}`;
+          status.textContent = `${t('scan.running')} ${d}/${total} · ${points.length}${t('scan.pointsSuffix')}`;
         },
         onProblem: async (msg) => {
           const c = await confirmDialog({ title: t('scan.devIssue.title'), body: msg, okText: t('scan.devIssue.ok'), danger: true });
           return c;
         },
-        onFinished: (pts, interrupted) => {
+        onFinished: (_pts, interrupted) => {
           if (activeTok !== null) {
             uiGate.endAuto(activeTok);
             activeTok = null;
           }
-          points.push(...pts);
           lastPoints = points;
           setRunning(false);
           runner = null;
           renderTable(points);
+          updateViCharts();
           status.textContent = `${interrupted ? t('scan.stopped') : t('scan.done')} · ${points.length}${t('scan.pointsSuffix')}${t('scan.outClosed')}`;
           void device.setOutput(false).catch(() => undefined);
+          const rec: ScanRecord = {
+            id: `s${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            createdAt: Date.now(),
+            kind,
+            start,
+            stop: stopVal,
+            step,
+            fixed,
+            settleMs: Math.max(0, Number(settleIn.value) || 0),
+            points: [...points],
+            interrupted,
+          };
+          void saveScanRecord(rec).then(() => {
+            records = [...records, rec];
+            selectedRecordId = rec.id;
+            refreshRecList();
+          });
         },
       },
     );
@@ -164,17 +226,20 @@ export function initScanTab(root: HTMLElement, device: DeviceController): void {
 
   root.append(
     h('div', { class: 'notice' }, t('scan.notice')),
-    h('div', { class: 'sc-fields' },
-      h('div', { class: 'sc-field' }, h('label', { class: 'sc-lbl' }, t('scan.axis')), kindSel),
-      h('div', { class: 'sc-field' }, startLbl, startIn),
-      h('div', { class: 'sc-field' }, stopLbl, stopIn),
-      h('div', { class: 'sc-field' }, stepLbl, stepIn),
-      h('div', { class: 'sc-field' }, fixedLbl, fixedIn),
-      h('div', { class: 'sc-field' }, settleLbl, settleIn),
-    ),
-    h('div', { class: 'row' }, run, stop, exportCsv, status),
+    h('div', { class: 'row sc-settings-run' },
+      h('div', { class: 'sc-fields' },
+        h('div', { class: 'sc-field' }, h('label', { class: 'sc-lbl' }, t('scan.axis')), kindSel),
+        h('div', { class: 'sc-field' }, startLbl, startIn),
+        h('div', { class: 'sc-field' }, stopLbl, stopIn),
+        h('div', { class: 'sc-field' }, stepLbl, stepIn),
+        h('div', { class: 'sc-field' }, fixedLbl, fixedIn),
+        h('div', { class: 'sc-field' }, settleLbl, settleIn),
+      ),
+      h('div', { class: 'sc-runctrl' }, run, stop, status)),
+    recBar,
     chartTitle,
     chartWrap,
+    viRow,
     tableWrap,
     h('div', { class: 'notice' }, t('scan.chartNote')),
   );
@@ -182,5 +247,79 @@ export function initScanTab(root: HTMLElement, device: DeviceController): void {
   chart.setPrimary('vout');
   device.on('telemetry', (st) => chart.push(st));
   device.on('state', (st) => chart.push(st));
+  viLin = new ViChart(q('#vi-lin', root) as HTMLCanvasElement, { logY: false, showPower: false, kind: kindSel.value as 'voltage' | 'current' });
+  viLog = new ViChart(q('#vi-log', root) as HTMLCanvasElement, { logY: true, showPower: false, kind: kindSel.value as 'voltage' | 'current' });
+
+  // ---- records management ----
+  function recLabel(r: ScanRecord): string {
+    const d = new Date(r.createdAt);
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mm = String(d.getMinutes()).padStart(2, '0');
+    return `${hh}:${mm} · ${r.kind === 'voltage' ? 'V' : 'A'} ${r.start}→${r.stop} step ${r.step} · ${r.points.length} pts${r.interrupted ? ' (int)' : ''}`;
+  }
+  function updateViCharts(): void {
+    viLin!.setData(lastPoints);
+    viLog!.setData(lastPoints);
+  }
+  function refreshRecList(): void {
+    recSel.textContent = '';
+    for (const r of records) {
+      recSel.append(h('option', { value: r.id }, recLabel(r)));
+    }
+    const any = records.length > 0;
+    recLoad.disabled = !any;
+    recDel.disabled = !any;
+    if (!any) selectedRecordId = null;
+    else if (!records.some((r) => r.id === selectedRecordId)) selectedRecordId = records[0].id;
+    recSel.value = selectedRecordId ?? '';
+  }
+  async function loadRecords(): Promise<void> {
+    records = await listScanRecords();
+    refreshRecList();
+  }
+  function viewRecord(id: string): void {
+    const r = records.find((x) => x.id === id);
+    if (!r) return;
+    lastPoints = [...r.points];
+    selectedRecordId = id;
+    setRunning(false);
+    renderTable(r.points);
+    updateViCharts();
+    status.textContent = `${t('scan.loadedRec')} · ${r.points.length}${t('scan.pointsSuffix')}`;
+  }
+  on(recSel, 'change', () => {
+    selectedRecordId = recSel.value || null;
+    if (selectedRecordId) viewRecord(selectedRecordId);
+  });
+  on(recLoad, 'click', () => {
+    const id = recSel.value || selectedRecordId;
+    if (id) viewRecord(id);
+  });
+  on(recDel, 'click', async () => {
+    const id = recSel.value || selectedRecordId;
+    if (!id) return;
+    const ok = await confirmDialog({ title: t('scan.deleteRec.title'), body: t('scan.deleteRec.body'), okText: t('scan.delete'), danger: true });
+    if (!ok) return;
+    await deleteScanRecord(id);
+    await loadRecords();
+    lastPoints = [];
+    renderTable([]);
+    updateViCharts();
+    status.textContent = t('scan.idle');
+  });
+  on(clear, 'click', () => {
+    lastPoints = [];
+    renderTable([]);
+    updateViCharts();
+    status.textContent = t('scan.idle');
+    refreshRecList();
+    chart.clear();
+  });
+  powerChk.addEventListener('change', () => {
+    const on = (powerChk.querySelector('input') as HTMLInputElement).checked;
+    viLin!.setShowPower(on);
+    viLog!.setShowPower(on);
+  });
   setRunning(false);
+  void loadRecords();
 }

@@ -454,13 +454,14 @@ export async function executeDsl(
   api: Dps150Api,
   log: (msg: string) => void,
   abort: () => boolean,
+  echo?: (msg: string) => void,
 ): Promise<RunResult> {
   const budget: Budget = { steps: 0, loops: 0, start: Date.now() };
   const scope = new Map<string, unknown>();
   syncStateVars(scope, api);
   const lv = (v: Valu): number => numVal(v, scope);
   try {
-    const signal = await runNodes(lines, { api, log, abort, budget, scope, lv });
+    const signal = await runNodes(lines, { api, log, echo: echo ?? log, abort, budget, scope, lv });
     if (signal === 'break' || signal === 'continue') {
       return { ok: false, error: signal === 'break' ? t('dsl.breakOutside') : t('dsl.continueOutside') };
     }
@@ -474,6 +475,7 @@ export async function executeDsl(
 interface Ctx {
   api: Dps150Api;
   log: (msg: string) => void;
+  echo: (msg: string) => void;
   abort: () => boolean;
   budget: Budget;
   scope: Map<string, unknown>;
@@ -554,7 +556,7 @@ async function runNodes(nodes: DslLine[], c: Ctx): Promise<string> {
         break;
       case 'echo': {
         const r = safeEval(op.expr, c.scope);
-        c.log(`${ld}ECHO ${String(r)}`);
+        c.echo(String(r));
         break;
       }
       case 'if': {

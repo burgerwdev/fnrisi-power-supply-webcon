@@ -8,15 +8,18 @@ import { uiGate } from '../../app/activity';
 import { h, on } from '../../ui/dom';
 import { confirmDialog } from '../../ui/confirm';
 import { download } from '../../storage/export';
-
-const SCRIPTS_KEY = 'dps150.scripts.v1';
+import { deleteScript, listScripts, listOutputs, saveScript, appendOutput, type ScriptMeta, type ScriptOutputRec } from '../../storage/scriptdata';
 
 const DEFAULT_SCRIPT = t('script.default');
 
 export function initScriptTab(root: HTMLElement, getApi: () => Dps150Api | null): void {
   root.textContent = '';
   root.append(h('h2', {}, t('page.script')));
-  const output = h('div', { class: 'log', style: 'height:110px;margin-top:6px' }, t('script.output'));
+  const output = h('div', { class: 'log', style: 'height:110px;margin-top:6px;resize:vertical;overflow:auto' }, t('script.output'));
+  const dataOut = h('div', { class: 'log dsldata', style: 'height:120px;margin-top:6px;resize:vertical;overflow:auto' }, t('script.dataOutput'));
+  const exportData = h('button', { id: 'dsl-exportdata', disabled: true }, t('script.exportData'));
+  const clearData = h('button', { id: 'dsl-cleardata' }, t('script.clearData'));
+  const histBtn = h('button', { id: 'dsl-hist' }, t('script.history'));
   const ta = h('textarea', {
     spellcheck: 'false',
     style: 'width:100%;height:250px;resize:vertical;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;background:var(--input-bg);color:var(--text);border:1px solid var(--input-border);border-radius:4px;padding:8px;line-height:1.5',
@@ -77,13 +80,27 @@ export function initScriptTab(root: HTMLElement, getApi: () => Dps150Api | null)
     h('div', { class: 'row' }, sampleSel, runBtn, stopBtn, chkBtn, saveBtn, expBtn, impBtn, h('span', { class: 'spacer' }), helpBtn),
     ta,
     output,
+    h('div', { class: 'row' }, exportData, clearData, histBtn, h('span', { class: 'dsldata-label' }, t('script.dataOutputTitle'))),
+    dataOut,
     h('div', { style: 'margin-top:8px' }, h('span', { style: 'font-size:13px;color:var(--label)' }, t('script.saved')), listEl),
   );
 
+  let dataLines: string[] = [];
+  let currentScriptId: string | null = null;
+  let currentScriptName: string | null = null;
+  let runId = '';
   function log(msg: string): void {
     const line = h('div', {}, `[${new Date().toLocaleTimeString()}] ${msg}`);
     output.append(line);
     output.scrollTop = output.scrollHeight;
+  }
+  function data(msg: string): void {
+    if (!dataLines.length) dataOut.textContent = '';
+    dataLines.push(msg);
+    const line = h('div', {}, msg);
+    dataOut.append(line);
+    dataOut.scrollTop = dataOut.scrollHeight;
+    exportData.disabled = false;
   }
 
   on(sampleSel, 'change', () => {
@@ -157,8 +174,21 @@ export function initScriptTab(root: HTMLElement, getApi: () => Dps150Api | null)
     stopped = false;
     runBtn.disabled = true;
     stopBtn.disabled = false;
+    runId = `run${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     log(t('script.run.start').replace('{n}', String(lines.length)));
-    const r = await executeDsl(lines, api, log, () => stopped);
+    const r = await executeDsl(lines, api, log, () => stopped, data);
+    // persist this run's data-output records, tied to the owning script (if any)
+    if (currentScriptId && dataLines.length) {
+      const sid = currentScriptId;
+      const records: ScriptOutputRec[] = dataLines.map((ln, i) => ({
+        id: `${runId}:${i}`,
+        scriptId: sid,
+        ts: Date.now() + i,
+        kind: 'data',
+        text: ln,
+      }));
+      Promise.all(records.map((rec) => appendOutput(rec))).catch(() => undefined);
+    }
     if (activeTok !== null) {
       uiGate.endAuto(activeTok);
       activeTok = null;
@@ -166,6 +196,7 @@ export function initScriptTab(root: HTMLElement, getApi: () => Dps150Api | null)
     runBtn.disabled = false;
     stopBtn.disabled = true;
     log(r.ok ? t('script.run.done') : t('script.run.interrupted').replace('{e}', r.error ?? ''));
+    if (currentScriptId && dataLines.length) log(`${t('script.savedOutput').replace('{n}', String(dataLines.length))}`);
   });
 
   on(stopBtn, 'click', () => {
@@ -173,20 +204,50 @@ export function initScriptTab(root: HTMLElement, getApi: () => Dps150Api | null)
     log(t('script.stopReq'));
   });
 
-  on(saveBtn, 'click', () => {
+  on(saveBtn, 'click', async () => {
+    if (currentScriptId) {
+      const ok = await confirmDialog({ title: t('script.save.title'), body: t('script.save.body').replace('{n}', currentScriptName ?? ''), okText: t('script.save.overwrite') });
+      if (ok) {
+        await saveScript({ id: currentScriptId, name: currentScriptName ?? t('script.unnamed'), code: ta.value, updatedAt: Date.now() });
+        await renderList();
+        log(t('script.savedDone').replace('{n}', currentScriptName ?? ''));
+        return;
+      }
+    }
     const nm = prompt(t('script.namePrompt'))?.trim();
     if (!nm) return;
-    try {
-      const all: Record<string, string> = JSON.parse(localStorage.getItem(SCRIPTS_KEY) ?? '{}');
-      all[nm] = ta.value;
-      localStorage.setItem(SCRIPTS_KEY, JSON.stringify(all));
-      renderList();
-      log(t('script.savedDone').replace('{n}', nm));
-    } catch (e) {
-      log(t('script.saveFail').replace('{e}', String(e)));
-    }
+    currentScriptId = `sc${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    currentScriptName = nm;
+    await saveScript({ id: currentScriptId, name: nm, code: ta.value, updatedAt: Date.now() });
+    await renderList();
+    log(t('script.savedDone').replace('{n}', nm));
   });
   on(expBtn, 'click', () => download(`dps150-script-${Date.now()}.txt`, ta.value, 'text/plain'));
+  on(exportData, 'click', () => {
+    if (!dataLines.length) return;
+    const csv = '\ufeff' + dataLines.map((l) => l).join('\r\n');
+    download(`dps150-data-${Date.now()}.csv`, csv);
+  });
+  on(clearData, 'click', () => {
+    dataLines = [];
+    dataOut.textContent = '';
+    exportData.disabled = true;
+  });
+  on(histBtn, 'click', async () => {
+    if (!currentScriptId) {
+      log(t('script.histNone'));
+      return;
+    }
+    const outs = await listOutputs(currentScriptId);
+    if (!outs.length) {
+      log(t('script.histNone'));
+      return;
+    }
+    const rows = outs.filter((o) => o.kind === 'data');
+    const csv = '\ufeff' + rows.map((o) => o.text).join('\r\n');
+    download(`dps150-script-${currentScriptName ?? 'out'}-history.csv`, csv);
+    log(`${t('script.histExported').replace('{n}', String(rows.length))}`);
+  });
   on(impBtn, 'click', () => {
     const input = h('input', { type: 'file', accept: '.txt,.dps', hidden: true }) as HTMLInputElement;
     input.onchange = async () => {
@@ -196,39 +257,39 @@ export function initScriptTab(root: HTMLElement, getApi: () => Dps150Api | null)
     input.click();
   });
 
-  function renderList(): void {
+  async function renderList(): Promise<void> {
     listEl.textContent = '';
-    let all: Record<string, string> = {};
+    let scripts: ScriptMeta[] = [];
     try {
-      all = JSON.parse(localStorage.getItem(SCRIPTS_KEY) ?? '{}');
+      scripts = await listScripts();
     } catch {
       /* ignore */
     }
-    const names = Object.keys(all);
-    if (!names.length) {
+    if (!scripts.length) {
       listEl.append(h('div', { class: 'notice' }, t('script.empty')));
       return;
     }
-    for (const nm of names) {
-      const open = h('button', { style: 'margin-right:6px' }, nm);
+    for (const sc of scripts) {
+      const open = h('button', { style: 'margin-right:6px' }, sc.name);
       const del = h('button', { class: 'danger' }, t('script.delBtn'));
       on(open, 'click', () => {
-        ta.value = all[nm];
+        ta.value = sc.code;
+        currentScriptId = sc.id;
+        currentScriptName = sc.name;
+        log(t('script.loaded').replace('{n}', sc.name));
       });
       on(del, 'click', async () => {
-        const ok = await confirmDialog({ title: t('script.del.title'), body: t('script.del.body').replace('{n}', nm), okText: t('script.del.ok'), danger: true });
+        const ok = await confirmDialog({ title: t('script.del.title'), body: t('script.del.body').replace('{n}', sc.name), okText: t('script.del.ok'), danger: true });
         if (!ok) return;
-        try {
-          const cur: Record<string, string> = JSON.parse(localStorage.getItem(SCRIPTS_KEY) ?? '{}');
-          delete cur[nm];
-          localStorage.setItem(SCRIPTS_KEY, JSON.stringify(cur));
-          renderList();
-        } catch {
-          /* ignore */
+        await deleteScript(sc.id);
+        if (currentScriptId === sc.id) {
+          currentScriptId = null;
+          currentScriptName = null;
         }
+        await renderList();
       });
       listEl.append(h('div', { style: 'padding:2px 0;border-bottom:1px solid var(--border-soft)' }, open, del));
     }
   }
-  renderList();
+  void renderList();
 }
